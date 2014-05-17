@@ -17,4 +17,8 @@
 #include <openssl/aes.h>
 #include <config.h>
 
+enum epakType { EPAK_OLD, EPAK_OLD_BE, EPAK_NEW, EPAK2 };
+extern int type;
+
+
 #endif /* EPK_H_ */

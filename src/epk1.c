@@ -6,7 +6,10 @@
 
 
 const char EPK1_MAGIC[] = "epak";
-int endianswap;
+int type;
+struct epk1Header_t *epk1 = NULL;
+struct epk1NewHeader_t *epk1n = NULL;
+struct epk1BeHeader_t *epk1b = NULL;
 
 int isFileEPK1(const char *epk_file) {
 	FILE *file = fopen(epk_file, "r");
@@ -24,143 +27,151 @@ int isFileEPK1(const char *epk_file) {
 	return result;
 }
 
-void printHeaderBEInfo(struct epk1BEHeader_t *epakHeader) {
-    //printf("\nFirmware otaID: %s\n", epakHeader->otaID);
-    printf("Firmware version: %02x.%02x.%02x.%02x\n", epakHeader->fwVer[3], epakHeader->fwVer[2], epakHeader->fwVer[1], epakHeader->fwVer[0]);
-    printf("PAK count: %d\n", epakHeader->pakCount);
-    printf("PAKs total size: %d\n\n", epakHeader->fileSize);
+void printHeaderInfo(int *type) {
+    if(*type != EPAK_OLD_BE) printf("\nFirmware otaID: ");
+    switch(*type){
+	case EPAK_OLD:
+	    printf("%s\n", epk1->otaID);
+	    break;
+	case EPAK_NEW:
+	    printf("%s\n", epk1n->otaID);
+	    break;
+    }
+    printf("Firmware version: ");
+    switch(*type){
+	case EPAK_OLD:
+	    printf("%02x.%02x.%02x.%02x\n", epk1->fwVer[3], epk1->fwVer[2], epk1->fwVer[1], epk1->fwVer[0]);
+	    break;
+	case EPAK_OLD_BE:
+	    printf("%02x.%02x.%02x.%02x\n", epk1b->fwVer[3], epk1b->fwVer[2], epk1b->fwVer[1], epk1b->fwVer[0]);
+	    break;
+	case EPAK_NEW:
+	    printf("%02x.%02x.%02x.%02x\n", epk1n->fwVer[3], epk1n->fwVer[2], epk1n->fwVer[1], epk1n->fwVer[0]);
+	    break;
+    }
+    printf("PAK count: %d\n",epk1->pakCount);
+    printf("PAKs total size: %d\n\n", epk1->fileSize);
+    
+    
 }
 
-void printHeaderInfo(struct epk1Header_t *epakHeader) {
-	printf("\nFirmware otaID: %s\n", epakHeader->otaID);
-	printf("Firmware version: %02x.%02x.%02x.%02x\n", epakHeader->fwVer[3], epakHeader->fwVer[2], epakHeader->fwVer[1], epakHeader->fwVer[0]);
-	printf("PAK count: %d\n", epakHeader->pakCount);
-	printf("PAKs total size: %d\n\n", epakHeader->fileSize);
-}
-
-void printNewHeaderInfo(struct epk1NewHeader_t *epakHeader) {
-	printf("\nFirmware otaID: %s\n", epakHeader->otaID);
-	printf("Firmware version: %02x.%02x.%02x.%02x\n", epakHeader->fwVer[3], epakHeader->fwVer[2], epakHeader->fwVer[1], epakHeader->fwVer[0]);
-	printf("PAK count: %d\n", epakHeader->pakCount);
-	printf("PAKs total size: %d\n\n", epakHeader->fileSize);
-}
-
-void constructBEVerString(char *fw_version, struct epk1BEHeader_t *epakHeader) {
-	sprintf(fw_version, "%02x.%02x.%02x", epakHeader->fwVer[2],	epakHeader->fwVer[1], epakHeader->fwVer[0]);
-}
-
-void constructVerString(char *fw_version, struct epk1Header_t *epakHeader) {
-	sprintf(fw_version, "%02x.%02x.%02x-%s", epakHeader->fwVer[2],	epakHeader->fwVer[1], epakHeader->fwVer[0], epakHeader->otaID);
-}
-
-void constructNewVerString(char *fw_version, struct epk1NewHeader_t *epakHeader) {
-	sprintf(fw_version, "%02x.%02x.%02x-%s", epakHeader->fwVer[2],	epakHeader->fwVer[1], epakHeader->fwVer[0], epakHeader->otaID);
+void constructVerString(char *fw_version, int *type) {
+    switch(*type){
+	case EPAK_OLD:
+	    sprintf(fw_version, "%02x.%02x.%02x-%s", epk1->fwVer[2], epk1->fwVer[1], epk1->fwVer[0], epk1->otaID);
+	    break;
+	case EPAK_OLD_BE:
+	    sprintf(fw_version, "%02x.%02x.%02x", epk1b->fwVer[2], epk1b->fwVer[1], epk1b->fwVer[0]);
+	    break;
+	case EPAK_NEW:
+	    sprintf(fw_version, "%02x.%02x.%02x-%s", epk1n->fwVer[2], epk1n->fwVer[1], epk1n->fwVer[0], epk1n->otaID);
+	    break;
+    }
 }
 
 void extract_epk1_file(const char *epk_file, struct config_opts_t *config_opts) {
-	int file;
-	if (!(file = open(epk_file, O_RDONLY))) {
+	FILE *file;
+	uint32_t pakcount;
+	size_t headerSize;
+	int fileLength, index;
+	char *pheader;
+	void *header;
+	
+	
+	file=fopen(epk_file, "rb");
+	if(file == NULL) {
 		printf("\nCan't open file %s\n", epk_file);
 		exit(1);
 	}
 	struct stat statbuf;
-	if (fstat(file, &statbuf) < 0) {
+	if (fstat(fileno(file), &statbuf) < 0) {
 		printf("\nfstat error\n"); 
 		exit(1);
 	}
-	int fileLength = statbuf.st_size;
+	fileLength = statbuf.st_size;
 	printf("File size: %d bytes\n", fileLength);
-	void *buffer;
-	if ( (buffer = mmap(0, fileLength, PROT_READ, MAP_SHARED, file, 0)) == MAP_FAILED ) {
-		printf("\nCannot mmap input file (%s). Aborting\n", strerror(errno));
-		exit(1);
-	}
 	char verString[1024];
 	char targetFolder[1024]="";
-	int index;
-	endianswap=0;
-	uint32_t pakcount = (((struct epk1Header_t*)buffer)->pakCount);
-	if ( (int)pakcount >> 8 != 0 ){
-	    endianswap=1;
-	    SWAP(pakcount);
-	    printf("\nFirmware type is EPK1 Big Endian...\n");
-	    unsigned char *header = malloc(sizeof(struct epk1BEHeader_t)); //allocate space for header
-	    memcpy(header, buffer, sizeof(struct epk1BEHeader_t)); //copy header to buffer
-	    struct epk1BEHeader_t *epakHeader = (struct epk1BEHeader_t*)header; //make struct from buffer
-	    SWAP(epakHeader->fileSize);
-	    SWAP(epakHeader->pakCount);
-	    SWAP(epakHeader->fwVer);
-	    printHeaderBEInfo(epakHeader);
-	    constructBEVerString(verString, epakHeader);
-	    constructPath(targetFolder, config_opts->dest_dir, verString, NULL);
-	    createFolder(targetFolder);
-	    for (index = 0; index < epakHeader->pakCount; index++) {
-		struct pakRec_t pakRecord = epakHeader->pakRecs[index];
-		struct pakHeader_t *pakHeader;
-		SWAP(pakRecord.offset);
-		SWAP(pakRecord.size);
-		unsigned char *pheader = malloc(sizeof(struct pakHeader_t));
-		memcpy(pheader, (buffer+pakRecord.offset), sizeof(struct pakHeader_t));
-		pakHeader = (struct pakHeader_t*)pheader;
-		SWAP(pakHeader->pakSize);
-		pakHeader = (struct pakHeader_t *)(buffer + pakRecord.offset);
-		char pakName[5] = "";
-		sprintf(pakName, "%.*s", 4, pakHeader->pakName);
-		char filename[255] = "";
-		constructPath(filename, targetFolder, pakName, ".pak");
-		printf("#%u/%u saving PAK  (%s) to file %s\n", index + 1, epakHeader->pakCount, pakName, filename);
-		if(pakRecord.size == 0 || pakRecord.offset == 0){
-		    printf("Skipping empty/invalid PAK \"%s\"\n", pakHeader->pakName);
-		    continue;
-		}
-		FILE *outfile = fopen(((const char*) filename), "w");
-		fwrite(pakHeader->pakName + sizeof(struct pakHeader_t), 1, pakRecord.size - 132, outfile);
-		fclose(outfile);
-		processExtractedFile(filename, targetFolder, pakName);
-	    }
-	}else if (pakcount < 21) { // old EPK1 header
-	    printf("\nFirmware type is EPK1...\n");
-	    struct epk1Header_t *epakHeader = (struct epk1Header_t*)buffer;
-	    printHeaderInfo(epakHeader);
-	    constructVerString(verString, epakHeader);
-	    constructPath(targetFolder, config_opts->dest_dir, verString, NULL);
-	    createFolder(targetFolder);
-	    for (index = 0; index < epakHeader->pakCount; index++) {
-		struct pakRec_t pakRecord = epakHeader->pakRecs[index];
-		struct pakHeader_t *pakHeader;
-		pakHeader = (struct pakHeader_t *)(buffer + pakRecord.offset);
-		char pakName[5] = "";
-		sprintf(pakName, "%.*s", 4, pakHeader->pakName);
-		char filename[255] = "";
-		constructPath(filename, targetFolder, pakName, ".pak");
-		printf("#%u/%u saving PAK  (%s) to file %s\n", index + 1, epakHeader->pakCount, pakName, filename);
-		FILE *outfile = fopen(((const char*) filename), "w");
-		fwrite(pakHeader->pakName + sizeof(struct pakHeader_t), 1, pakRecord.size - 132, outfile);
-		fclose(outfile);
-		processExtractedFile(filename, targetFolder, pakName);
-	    }
-	} else { // new EPK1 header
+	fseek(file, 8, SEEK_SET);
+	fread(&pakcount, 4, 1, file);
+	if ( (int)pakcount >> 8 != 0 )
+	    type = EPAK_OLD_BE;
+	else if(pakcount < 21)
+	    type = EPAK_OLD;
+	else
+	    type = EPAK_NEW;
+	fseek(file, 0, SEEK_SET);
+	
+	switch(type){
+	    case EPAK_OLD:
+		headerSize=sizeof(struct epk1Header_t);
+		printf("\nFirmware type is EPK1...\n");
+		break;
+	    case EPAK_OLD_BE:
+		headerSize=sizeof(struct epk1BeHeader_t);
+		printf("\nFirmware type is EPK1 Big Endian...\n");
+		break;
+	    case EPAK_NEW:
+		headerSize=sizeof(struct epk1NewHeader_t);
 		printf("\nFirmware type is EPK1(new)...\n");
-		struct epk1NewHeader_t *epakHeader = (struct epk1NewHeader_t*) (buffer);
-		printNewHeaderInfo(epakHeader);
-		constructNewVerString(verString, epakHeader);
-		constructPath(targetFolder, config_opts->dest_dir, verString, NULL);
-		createFolder(targetFolder);
-		for (index = 0; index < epakHeader->pakCount; index++) {
-			struct pakRec_t pakRecord = epakHeader->pakRecs[index];
-			struct pakHeader_t *pakHeader = (struct pakHeader_t *)(buffer + pakRecord.offset);
-			char pakName[5] = "";
-			sprintf(pakName, "%.*s", 4, pakHeader->pakName);
-			char filename[255] = "";
-			constructPath(filename, targetFolder, pakName, ".pak");
-			printf("#%u/%u saving PAK (%s) to file %s\n", index + 1, epakHeader->pakCount, pakName, filename);
-			FILE *outfile = fopen(((const char*) filename), "w");
-			fwrite(pakHeader->pakName + sizeof(struct pakHeader_t), 1, pakHeader->pakSize + 4, outfile);
-			fclose(outfile);
-			processExtractedFile(filename, targetFolder, pakName);
-		}
+		break;
 	}
-	if (munmap(buffer, fileLength) == -1) printf("Error un-mmapping the file");
-	close(file);
+	header=malloc(headerSize);
+	epk1=(struct epk1Header_t *)header;
+	epk1b=(struct epk1BeHeader_t *)header;
+	epk1n=(struct epk1NewHeader_t *)header;
+	fread(header, headerSize, 1, file);
+	
+	if(type == EPAK_OLD_BE){
+	    SWAP(pakcount);
+	    SWAP(epk1b->fileSize);
+	    SWAP(epk1b->pakCount);
+	    SWAP(epk1b->fwVer);
+	}
+	
+	printHeaderInfo(&type);
+	constructVerString(verString, &type);
+	constructPath(targetFolder, config_opts->dest_dir, verString, NULL);
+	createFolder(targetFolder);
+	for (index = 0; index < pakcount; index++) {
+	    struct pakRec_t pakRecord;
+	    switch(type){
+		case EPAK_OLD: pakRecord = epk1->pakRecs[index]; break;
+		case EPAK_OLD_BE:
+		    pakRecord = epk1b->pakRecs[index];
+		    SWAP(pakRecord.offset);
+		    SWAP(pakRecord.size);
+		    break;
+		case EPAK_NEW: pakRecord = epk1n->pakRecs[index]; break;
+	    }
+	    pheader=malloc(sizeof(struct pakHeader_t));
+	    struct pakHeader_t *pakHeader = (struct pakHeader_t*)pheader;
+	    fseek(file, pakRecord.offset, SEEK_SET);
+	    fread(pheader, sizeof(struct pakHeader_t), 1, file);
+	    if(type == EPAK_OLD_BE)
+		SWAP(pakHeader->pakSize);
+	    char pakName[5] = "";
+	    sprintf(pakName, "%.*s", 4, pakHeader->pakName);
+	    char filename[255] = "";
+	    constructPath(filename, targetFolder, pakName, ".pak");
+	    printf("#%u/%u saving PAK  (%s) to file %s\n", index + 1, pakcount, pakName, filename);
+	    if(pakRecord.size == 0 || pakRecord.offset == 0){
+		printf("Skipping empty/invalid PAK \"%s\"\n", pakName);
+		continue;
+	    }
+	    FILE *outfile = fopen(((const char*) filename), "w");
+	    size_t size=0, done=0;
+	    char buf[BUFSIZ];
+	    
+	    while ((size = fread(buf, 1, BUFSIZ, file)) && done<=(pakRecord.size-132)) {
+		done+=fwrite(buf, 1, size, outfile);
+	    }
+	    fflush(outfile);
+	    ftruncate(fileno(outfile), pakRecord.size-132);
+	    //fwrite(pakHeader->pakName + sizeof(struct pakHeader_t), 1, pakRecord.size - 132, outfile);
+	    fclose(outfile);
+	    processExtractedFile(filename, targetFolder, pakName);
+	}
+	fclose(file);
 }
 

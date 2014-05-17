@@ -7,7 +7,6 @@
 #include <string.h>
 #include <minigzip.h>
 
-extern int endianswap;
 #define SWAP(x) SwapBytes(&x, sizeof(x));
 
 #define GZIP_CHUNK 0x4000
